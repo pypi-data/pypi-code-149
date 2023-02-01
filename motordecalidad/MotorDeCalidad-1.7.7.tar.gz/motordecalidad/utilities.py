@@ -1,0 +1,42 @@
+from motordecalidad.constants import *
+from pyspark.sql import DataFrame
+
+
+def send_email(receiver_email = "operacionestelefonicabi.hispam@outlook.com"):
+    import smtplib
+    from email.message import EmailMessage
+    sslPort = 587  # For SSL
+    smtp_server = "smtp-mail.outlook.com"
+    sender_email = "operacionestelefonicabi.hispam@outlook.com"
+    password = "Telef0n1ca@2022"
+    message = EmailMessage()
+    message["Subject"] = "Ejecucion de Motor de Calidad"
+    message["From"] = sender_email
+    message["To"] = receiver_email
+    text = """\
+    Hola,
+    Su ejecucion en el motorde calidad ha dado resultados erroneos que superan los limites establecidos """
+    message.set_content(text)
+    smtp = smtplib.SMTP(smtp_server,port=sslPort)
+    smtp.starttls()
+    smtp.login(sender_email,password)
+    smtp.sendmail(sender_email,receiver_email,message.as_string())
+    smtp.quit()
+#Function to define the dbutils library from Azure Databricks
+def get_dbutils(spark):
+        try:
+            from pyspark.dbutils import DBUtils
+            dbutils = DBUtils(spark)
+        except ImportError:
+            import IPython
+            dbutils = IPython.get_ipython().user_ns["dbutils"]
+        return dbutils
+def applyFilter(object:DataFrame, filtered) :
+    try:
+        filteredColumn = filtered.get(JsonParts.Fields)
+        filterValue = filtered.get(JsonParts.Values)
+        print("Extracción de parametros de filtrado finalizada")
+        return object.filter(col(filteredColumn)==filterValue)
+    except:
+        print("Se omite filtro")
+        return object
