@@ -1,0 +1,1 @@
+module_name = __import__('collibra-luigi-client')
