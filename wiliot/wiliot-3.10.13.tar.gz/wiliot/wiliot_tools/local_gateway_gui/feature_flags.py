@@ -1,0 +1,5 @@
+LIVE_PLOTS_ENABLE = False
+
+LIVE_PLOTS_ATTRIBUTES = ['gpio4_sense', 'lo_max_freq']
+LIVE_PLOTS_ANIMATE = False
+LIVE_PLOTS_DEQUE_LENGTH = 100
