@@ -1,0 +1,1 @@
+from main import fonction as lolapifr
