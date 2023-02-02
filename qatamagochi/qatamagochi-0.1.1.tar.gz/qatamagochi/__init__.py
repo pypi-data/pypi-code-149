@@ -1,0 +1,1 @@
+from qatamagochi import Qatamagochi
