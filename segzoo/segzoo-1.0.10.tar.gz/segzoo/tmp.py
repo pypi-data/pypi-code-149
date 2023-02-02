@@ -1,0 +1,1 @@
+conda create -n segzoo_update seaborn segtools ggd snakemake pybedtools -y
