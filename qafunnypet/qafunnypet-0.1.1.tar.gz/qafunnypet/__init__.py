@@ -1,0 +1,1 @@
+from qafunnypet import Qafunnypet
