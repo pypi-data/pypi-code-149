@@ -1,0 +1,1 @@
+#source : https://riverbankcomputing.com/software/qscintilla/intro
