@@ -1,0 +1,1 @@
+from pan_plyr import pan_plyr
