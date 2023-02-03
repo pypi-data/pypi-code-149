@@ -1,0 +1,2 @@
+import muphyn
+muphyn.start()
