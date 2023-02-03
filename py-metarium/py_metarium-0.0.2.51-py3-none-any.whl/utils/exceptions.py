@@ -1,0 +1,2 @@
+class ChainConnectionRefusedError(Exception):
+    pass
