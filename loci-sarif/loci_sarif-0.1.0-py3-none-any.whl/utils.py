@@ -1,0 +1,297 @@
+import os
+import pathlib
+import configparser
+import urllib
+import requests
+import json
+from requests.exceptions import RequestException
+import rich
+from rich.console import Console
+from loci_sarif import __version__, PROG_NAME, SUPPORTED_SARIF_VERSIONS, SUPPORTED_SARIF_TOOLS
+
+LOCI_CONFIG_DIR = "loci"
+LOCI_CONFIG_FILENAME = "loci-config.ini"
+LOCI_PROJECT_FILENAME = ".loci-project.ini"
+
+console = Console()
+
+
+class LociError(Exception):
+    pass
+
+
+# This function from https://github.com/tensorflow/tensorboard/blob/master/tensorboard/uploader/util.py
+# Apache 2 licensed
+def get_user_config_directory():
+    """Returns a platform-specific root directory for user config settings."""
+    # On Windows, prefer %LOCALAPPDATA%, then %APPDATA%, since we can expect the
+    # AppData directories to be ACLed to be visible only to the user and admin
+    # users (https://stackoverflow.com/a/7617601/1179226). If neither is set,
+    # return None instead of falling back to something that may be world-readable.
+    if os.name == "nt":
+        appdata = os.getenv("LOCALAPPDATA")
+        if appdata:
+            return appdata
+        appdata = os.getenv("APPDATA")
+        if appdata:
+            return appdata
+        return None
+    # On non-windows, use XDG_CONFIG_HOME if set, else default to ~/.config.
+    xdg_config_home = os.getenv("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        return xdg_config_home
+    return os.path.join(os.path.expanduser("~"), ".config")
+
+
+def get_loci_dir() -> str:
+    loci_dir = pathlib.Path(get_user_config_directory(), LOCI_CONFIG_DIR)
+    # Create the directory if it doesn't exist yet.
+    loci_dir.mkdir(parents=True, exist_ok=True)
+    return str(loci_dir)
+
+
+def get_loci_config_location() -> str:
+    return str(pathlib.Path(get_loci_dir(), LOCI_CONFIG_FILENAME))
+
+
+def get_loci_config():
+    try:
+        config = configparser.ConfigParser()
+        config.sections()
+        config.read(get_loci_config_location())
+        return config
+    except configparser.Error:
+        print_error("Unable to read config file at " + get_loci_config_location())
+        raise LociError
+
+
+def is_loci_setup() -> bool:
+    try:
+        config = get_loci_config()
+        if config["default"]["api_key"] is not None and config["default"]["loci_server"] is not None:
+            return True
+        return False
+    except LociError:
+        return False
+    except KeyError:
+        return False
+
+
+def write_loci_config_value(key, value):
+    try:
+        config = get_loci_config()
+    except LociError:
+        pass
+
+    if "default" not in config:
+        config["default"] = {}
+    config["default"][key] = value
+
+    with open(get_loci_config_location(), "w") as configfile:
+        config.write(configfile)
+
+
+def get_loci_config_value(key):
+    try:
+        config = get_loci_config()
+        if "default" not in config:
+            return None
+        if key not in config["default"]:
+            return None
+        return config["default"][key]
+    except LociError:
+        return None
+
+
+def loci_api_req(api_url, method="GET", data={}, params={}, show_loading=True):
+    url = urllib.parse.urljoin(get_loci_config_value("loci_server"), api_url)
+    headers = {"X-API-KEY": get_loci_config_value("api_key")}
+
+    try:
+        if show_loading:
+            with working():
+                r = requests.request(method, url, headers=headers, timeout=5, json=data, params=params)
+        else:
+            r = requests.request(method, url, headers=headers, timeout=5, json=data, params=params)
+
+        if r.ok:
+            if len(r.text) == 0:
+                # Handles cases where there's a 204 or something with non content, but success.
+                return {}
+            res = r.json()
+            return res
+        elif r.status_code == 400:
+            # This is similar to a 422, but we generate this, not FastAPI.
+            print_error("The input given was incorrect, please check all your parameters.", fatal=False)
+            print_error("    Details: [bold]%s[/bold]" % r.json()["detail"])
+        elif r.status_code == 401:
+            print_error("Your credentials are not correct, please check your API key configuration.", fatal=False)
+            print_error("    Details: [bold]%s[/bold]" % r.json()["detail"])
+            return None
+        elif r.status_code == 403:
+            print_error("You do not appear to have permissions to perform that action.", fatal=False)
+            print_error("    Details: [bold]%s[/bold]" % r.json()["detail"])
+            return None
+        elif r.status_code == 404:
+            print_error("Not found.", fatal=False)
+            print_error("    Details: [bold]%s[/bold]" % r.json()["detail"])
+            return None
+        elif r.status_code == 422:
+            print_error("The input given was incorrect, please check all your parameters.")
+            # The reason we don't give details here is that a 422 is normally automatically generated by the server,
+            # not something we can control and to which we can add details.
+            return None
+        else:
+            print_error("The server has returned an unknown error. Please see the server logs for more information.")
+            return None
+    except RequestException:
+        print_error("The Loci server did not respond. Is the URL correct and the server at [bold]%s[/bold] running?"
+                    % get_loci_config_value("loci_server"))
+        return None
+
+
+def _print_line(header, msg):
+    rich.print(header, msg)
+
+
+def print_info(msg):
+    _print_line("[[bold blue]INFO[/bold blue]]", msg)
+
+
+def print_success(msg):
+    _print_line("[[bold green]SUCCESS[/bold green]]", msg)
+
+
+def print_warning(msg):
+    _print_line("[[bold yellow]WARN[/bold yellow]]", msg)
+
+
+def print_error(msg, fatal=True):
+    _print_line("[[bold red]ERROR[/bold red]]", msg)
+
+    if fatal:
+        quit(-1)
+
+
+def print_version():
+    rich.print("[bold]%s[/bold] v%s" % (PROG_NAME, __version__))
+
+
+def working():
+    return console.status("Working...")
+
+
+def get_project_id_from_config_in_dir(fq_directory):
+    config = configparser.ConfigParser()
+    config.sections()
+
+    current_dir = fq_directory
+    last_dir = ""
+
+    while True:
+        try:
+            config.read(pathlib.Path(current_dir, LOCI_PROJECT_FILENAME))
+            return int(config["default"]["project_id"]), config["default"]["project_name"]
+        except KeyError:
+            if current_dir == pathlib.Path.home() or current_dir == last_dir:
+                return None, None
+            last_dir = current_dir
+            current_dir = os.path.dirname(current_dir)
+
+
+def calculate_artifact_from_fq_filename(fq_file_path, src_root_dir, basename):
+    # Next, we need to figure out if we can autodetect the full artifact filename (usually by looking
+    # for the source root directory).
+    tmp_srd = "/" + src_root_dir + "/"
+    if tmp_srd in fq_file_path:
+        # Easy mode, slice away the source root dir and everything before it.
+        idx = fq_file_path.index(tmp_srd)
+        return fq_file_path[idx+len(tmp_srd):]
+    else:
+        # Harder mode. We can guess the name by looking at the basename of the "path" stored in the run.
+        return "asdasd"
+
+
+class Result():
+    def __init__(self,
+                 ruleid: str,
+                 severity: str,
+                 filename: str,
+                 line: int,
+                 message: str,
+                 tool: str):
+        self.ruleid = ruleid
+        self.severity = severity
+        self.filename = filename
+        self.line = line
+        self.message = message
+        self.tool = tool
+
+    def get_artifact(self):
+        return self.filename + ":" + str(self.line)
+
+
+def open_sarif_file_and_get_results(input_filename):
+    print_info("Opening SARIF file...")
+    try:
+        with open(input_filename) as fd:
+            sarif_dict = json.load(fd)
+    except FileNotFoundError:
+        print_error(f"Failed to open the file '{input_filename}'. Please check to make sure it exists.")
+        quit(-1)
+    except json.JSONDecodeError:
+        print_error(f"Failed to parse the file '{input_filename}'. It does not appear to be valid JSON.")
+        quit(-1)
+    try:
+        if "https://docs.oasis-open.org/sarif/sarif/" not in sarif_dict["$schema"]:
+            raise KeyError
+    except KeyError:
+        print_error(f"Failed to parse the file '{input_filename}'. It does not appear to be a valid "
+                    "SARIF file.")
+        quit(-1)
+
+    if sarif_dict["version"] not in SUPPORTED_SARIF_VERSIONS:
+        version = sarif_dict["version"]
+        print_warning(f"The file '{input_filename}' is SARIF v{version}, while only v2.1.0 is "
+                      "supported. The file may still import correctly, but if not, open a new issue in the "
+                      "source code repo for loci-sarif.")
+
+    print_success("SARIF file loaded.")
+
+    results = []
+
+    for run_dict in sarif_dict["runs"]:
+        if run_dict["tool"]["driver"]["name"] not in SUPPORTED_SARIF_TOOLS:
+            print_warning(f"The tool used to generate a run, '{input_filename}', is not officially supported "
+                          "by this Loci Notes importer. We'll try to import it anyhow, and it should work, but "
+                          "if not open an issue and include which tool was used to generate it. If it does work, "
+                          "let us know, we can add it to the list of known good tools.")
+        for result_dict in run_dict["results"]:
+            ruleid = result_dict["ruleId"]
+            if len(result_dict["locations"]) > 1:
+                print_warning(f"Multiple locations are reported in the result for {ruleid}. This is weird and not "
+                              "officially supported by this Loci Notes importer. Please open an issue if you see "
+                              "this, and we'll try to import the first one.")
+
+            # TODO we might be able to slice out everything past _src if it's in the result.
+            filename = result_dict["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+            line = result_dict["locations"][0]["physicalLocation"]["region"]["endLine"]
+            message = result_dict["message"]["text"]
+
+            rule_info_dict = None
+            for rule_info in run_dict["tool"]["driver"]["rules"]:
+                if rule_info["id"] == ruleid:
+                    rule_info_dict = rule_info
+                    break
+
+            if rule_info_dict is None:
+                print_error(f"Failed to find the rule {ruleid}. Please check to make sure the SARIF file is correct.")
+                quit(-1)
+
+            severity = rule_info_dict["defaultConfiguration"]["level"]
+            tool = run_dict["tool"]["driver"]["name"]
+
+            tmp_result = Result(ruleid=ruleid, filename=filename, line=line, message=message, severity=severity,
+                                tool=tool)
+            results.append(tmp_result)
+    return results
